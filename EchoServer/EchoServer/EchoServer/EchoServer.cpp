@@ -1,4 +1,5 @@
 #pragma comment(lib, "ws2_32.lib") //Winsock 사용을 위해 필요
+#pragma comment()
 
 #include "stdafx.h"
 #include <WinSock2.h>	//Winsock 함수들 포함. winsock과 winsock2의 차이는 뭘까
@@ -10,6 +11,11 @@
 
 SOCKET listenerSocket = NULL;
 char* className = "EchoServer";
+
+void printError(const char* processName, int errCode){
+	printf_s("There was an error while running \"%s\", Error code : %d\n", processName, errCode);
+	return;
+}
 
 bool initListener(HWND hwnd){
 	WSADATA wsaData;
@@ -51,13 +57,32 @@ bool initListener(HWND hwnd){
 	return true;
 }
 
-void printError(const char* processName, int errCode){
-	printf_s("There was an error while running \"%s\", Error code : %d\n", processName, errCode);
-	return;
-}
+
 
 LRESULT CALLBACK Winproc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
-
+	SOCKET listen_fd = 0;
+	char buf[BUFSIZE] = {0x00, };
+	if (uMsg == WM_CREATE){
+		initListener(hwnd);
+	}
+	if (uMsg == WM_SOCKET){
+		switch (WSAGETSELECTEVENT(lParam))
+		{
+		case FD_ACCEPT:
+			listen_fd = accept(wParam, NULL, NULL);
+			WSAAsyncSelect(listen_fd, hwnd, WM_SOCKET, FD_READ | FD_CLOSE);
+			break;
+		case FD_READ:
+			recv(wParam, buf, BUFSIZE, 0);
+			send(wParam, buf, strlen(buf), 0);
+			break;
+		case FD_CLOSE:
+			closesocket(listen_fd);
+			break;
+		default:
+			break;
+		}
+	}
 }
 
 int _tmain(int argc, _TCHAR* argv[])
@@ -80,6 +105,14 @@ int _tmain(int argc, _TCHAR* argv[])
 	windowClass.hIconSm = NULL; //handle to a small icon.
 
 	RegisterClassEx(&windowClass);
+
+	window = CreateWindow((LPCWSTR)className, (LPCWSTR)className, WS_OVERLAPPEDWINDOW, 200, 200, 600, 300, NULL, 0, NULL, NULL);
+
+	while (GetMessage(&msg, 0, 0, 0) > 0)
+	{
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
 
 	return 0;
 }
