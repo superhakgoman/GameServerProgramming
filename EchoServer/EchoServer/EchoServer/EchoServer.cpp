@@ -1,16 +1,26 @@
-#pragma comment(lib, "ws2_32.lib") //Winsock 사용을 위해 필요
-#pragma comment()
-
 #include "stdafx.h"
 #include <WinSock2.h>	//Winsock 함수들 포함. winsock과 winsock2의 차이는 뭘까
 #include <stdio.h>
+#include <vector>
+#include <map>
+
+#pragma warning(disable: 4996) //error C4996을 넘어가기 위해서 넣음. VS 구버전에서 warning이던 게 2013부터 error로 처리된다는데 그래서 코드를 어떻게 바꾸라는 건지는 아직 모르겠다
+#pragma comment(lib, "ws2_32.lib") //Winsock 사용을 위해 필요
 
 #define BUFSIZE 4096	//버퍼 크기
-#define PORTNUM 9999	//비둘기야 먹자
+#define PORTNUM 9001	//포트 번호
 #define WM_SOCKET WM_USER +1 //WM_USER : private 메시지를 만드는 데 사용. WM_USER + n 형태로 사용. WM_APP과 정확히 어떻게 다른지 잘 모르겠다. 
 
 SOCKET listenerSocket = NULL;
-char* className = "EchoServer";
+
+struct Session
+{
+	char recvBuf[BUFSIZE];
+};
+
+//std::vector<Session*> Sessions;
+std::map<SOCKET, Session*> SessionMap;
+
 
 void printError(const char* processName, int errCode){
 	printf_s("There was an error while running \"%s\", Error code : %d\n", processName, errCode);
@@ -32,7 +42,10 @@ bool initListener(HWND hwnd){
 		return false;
 	}
 	
-	memset((void*)&addr, 0x00, sizeof(addr));
+	int opt = 1;
+	setsockopt(listenerSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(int));
+	
+	ZeroMemory(&addr, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(PORTNUM);
 	addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -54,14 +67,19 @@ bool initListener(HWND hwnd){
 		return false;
 	}
 
+	printf("socket init completed.");
 	return true;
 }
 
 
 
 LRESULT CALLBACK Winproc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
-	SOCKET listen_fd = 0;
-	char buf[BUFSIZE] = {0x00, };
+	SOCKET serverSocket = 0;
+	SOCKADDR_IN addr;
+	Session* session = nullptr;
+
+	int addrLen = 0;
+
 	if (uMsg == WM_CREATE){
 		initListener(hwnd);
 	}
@@ -69,20 +87,59 @@ LRESULT CALLBACK Winproc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
 		switch (WSAGETSELECTEVENT(lParam))
 		{
 		case FD_ACCEPT:
-			listen_fd = accept(wParam, NULL, NULL);
-			WSAAsyncSelect(listen_fd, hwnd, WM_SOCKET, FD_READ | FD_CLOSE);
+			addrLen = sizeof(addr);
+			serverSocket = accept(wParam, (SOCKADDR*)&addr, &addrLen);
+			if (serverSocket == INVALID_SOCKET){
+				printError("accept", WSAGetLastError());
+				return -1;
+			}
+
+			printf_s("Accepted. ip : %s   port : %d   \n", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+
+			session = new Session();
+			SessionMap[serverSocket] = session;
+			
+			if (WSAAsyncSelect(serverSocket, hwnd, WM_SOCKET, FD_WRITE | FD_READ | FD_CLOSE) == SOCKET_ERROR){
+				closesocket(serverSocket);
+				printError("WSAAsyncSelect", WSAGetLastError());
+				return -1;
+			}
+				
 			break;
 		case FD_READ:
-			recv(wParam, buf, BUFSIZE, 0);
-			send(wParam, buf, strlen(buf), 0);
+			if (SessionMap.find(wParam) != SessionMap.end())
+			{
+				session = SessionMap[wParam];
+				if (recv(wParam, session->recvBuf, BUFSIZE, NULL) == SOCKET_ERROR)
+				{
+					closesocket(wParam);
+					SessionMap.erase(wParam);
+					printError("recv", WSAGetLastError());
+					return -1;
+				}
+
+				printf_s("Received. socket : %d,   recvBuf : %s\n", wParam, session->recvBuf);
+
+				if (send(wParam, session->recvBuf, BUFSIZE ,NULL) == SOCKET_ERROR)
+				{
+					closesocket(wParam);
+					SessionMap.erase(wParam);
+					printError("send", WSAGetLastError());
+					return -1;
+				}
+
+				printf_s("Sended. socket : %d,   recvBuf : %s\n", wParam, session->recvBuf);
+
+			}
 			break;
 		case FD_CLOSE:
-			closesocket(listen_fd);
+			closesocket(serverSocket);
 			break;
 		default:
 			break;
 		}
 	}
+	return 1;
 }
 
 int _tmain(int argc, _TCHAR* argv[])
@@ -90,6 +147,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	MSG msg;
 	WNDCLASSEX windowClass;
 	HWND window;
+	char* className = "EchoServer";
 
 	windowClass.cbSize = sizeof(WNDCLASSEX); //size of this structure. set before calling the GetClassInfoEx().
 	windowClass.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW; // class style. can be any combination of the Window Class Styles. 
